@@ -21,7 +21,7 @@ from sam2.sam2_image_predictor import SAM2ImagePredictor
 """
 Hyper parameters
 """
-API_TOKEN = "Your API token"
+API_TOKEN = "4c60fde736daa1f4d846c993ecd81cb2"
 TEXT_PROMPT = "car . building ."
 IMG_PATH = "notebooks/images/cars.jpg"
 SAM2_CHECKPOINT = "./checkpoints/sam2_hiera_large.pt"
