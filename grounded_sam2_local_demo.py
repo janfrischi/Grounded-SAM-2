@@ -5,17 +5,19 @@ import torch
 import numpy as np
 import supervision as sv
 import pycocotools.mask as mask_util
+import warnings
 from pathlib import Path
 from torchvision.ops import box_convert
 from sam2.build_sam import build_sam2
 from sam2.sam2_image_predictor import SAM2ImagePredictor
 from grounding_dino.groundingdino.util.inference import load_model, load_image, predict
 
+warnings.filterwarnings("ignore")
 """
 Hyper parameters
 """
-TEXT_PROMPT = "car. tire."
-IMG_PATH = "notebooks/images/truck.jpg"
+TEXT_PROMPT = "billboard."
+IMG_PATH = "notebooks/images/city.jpg"
 SAM2_CHECKPOINT = "./checkpoints/sam2_hiera_large.pt"
 SAM2_MODEL_CONFIG = "sam2_hiera_l.yaml"
 GROUNDING_DINO_CONFIG = "grounding_dino/groundingdino/config/GroundingDINO_SwinT_OGC.py"
@@ -40,11 +42,10 @@ sam2_predictor = SAM2ImagePredictor(sam2_model)
 
 # build grounding dino model
 grounding_model = load_model(
-    model_config_path=GROUNDING_DINO_CONFIG, 
+    model_config_path=GROUNDING_DINO_CONFIG,
     model_checkpoint_path=GROUNDING_DINO_CHECKPOINT,
     device=DEVICE
 )
-
 
 # setup the input image and text prompt for SAM 2 and Grounding DINO
 # VERY important: text queries need to be lowercased + end with a dot
@@ -68,7 +69,6 @@ h, w, _ = image_source.shape
 boxes = boxes * torch.Tensor([w, h, w, h])
 input_boxes = box_convert(boxes=boxes, in_fmt="cxcywh", out_fmt="xyxy").numpy()
 
-
 # FIXME: figure how does this influence the G-DINO model
 torch.autocast(device_type="cuda", dtype=torch.bfloat16).__enter__()
 
@@ -90,7 +90,6 @@ Post-process the output of the model to get the masks, scores, and logits for vi
 # convert the shape to (n, H, W)
 if masks.ndim == 4:
     masks = masks.squeeze(1)
-
 
 confidences = confidences.numpy().tolist()
 class_names = labels
@@ -128,10 +127,12 @@ cv2.imwrite(os.path.join(OUTPUT_DIR, "grounded_sam2_annotated_image_with_mask.jp
 Dump the results in standard format and save as json files
 """
 
+
 def single_mask_to_rle(mask):
     rle = mask_util.encode(np.array(mask[:, :, None], order="F", dtype="uint8"))[0]
     rle["counts"] = rle["counts"].decode("utf-8")
     return rle
+
 
 if DUMP_JSON_RESULTS:
     # convert mask into rle format
@@ -142,7 +143,7 @@ if DUMP_JSON_RESULTS:
     # save the results in standard format
     results = {
         "image_path": img_path,
-        "annotations" : [
+        "annotations": [
             {
                 "class_name": class_name,
                 "bbox": box,
@@ -155,6 +156,6 @@ if DUMP_JSON_RESULTS:
         "img_width": w,
         "img_height": h,
     }
-    
+
     with open(os.path.join(OUTPUT_DIR, "grounded_sam2_local_image_demo_results.json"), "w") as f:
         json.dump(results, f, indent=4)
