@@ -6,10 +6,9 @@ import supervision as sv
 from PIL import Image
 from sam2.build_sam import build_sam2_video_predictor, build_sam2
 from sam2.sam2_image_predictor import SAM2ImagePredictor
-from transformers import AutoProcessor, AutoModelForZeroShotObjectDetection 
+from transformers import AutoProcessor, AutoModelForZeroShotObjectDetection
 from utils.track_utils import sample_points_from_masks
 from utils.video_utils import create_video_from_images
-
 
 """
 Step 1: Environment settings and model initialization
@@ -22,7 +21,7 @@ if torch.cuda.get_device_properties(0).major >= 8:
     torch.backends.cuda.matmul.allow_tf32 = True
     torch.backends.cudnn.allow_tf32 = True
 
-# init sam image predictor and video predictor model
+# init sam image predictor and video predictor model, here we use the large model
 sam2_checkpoint = "./checkpoints/sam2_hiera_large.pt"
 model_cfg = "sam2_hiera_l.yaml"
 
@@ -30,21 +29,20 @@ video_predictor = build_sam2_video_predictor(model_cfg, sam2_checkpoint)
 sam2_image_model = build_sam2(model_cfg, sam2_checkpoint)
 image_predictor = SAM2ImagePredictor(sam2_image_model)
 
-
 # init grounding dino model from huggingface
 model_id = "IDEA-Research/grounding-dino-tiny"
 device = "cuda" if torch.cuda.is_available() else "cpu"
+print("device", device)
 processor = AutoProcessor.from_pretrained(model_id)
 grounding_model = AutoModelForZeroShotObjectDetection.from_pretrained(model_id).to(device)
 
-
 # setup the input image and text prompt for SAM 2 and Grounding DINO
 # VERY important: text queries need to be lowercased + end with a dot
-text = "car."
+text = "bottle. mouse. keyboard."
 
-# `video_dir` a directory of JPEG frames with filenames like `<frame_index>.jpg`  
+# video_dir a directory of JPEG frames with filenames like `<frame_index>.jpg`
 
-video_dir = "notebooks/videos/car"
+video_dir = "custom_video_frames"
 
 # scan all the JPEG frame names in this directory
 frame_names = [
@@ -56,9 +54,8 @@ frame_names.sort(key=lambda p: int(os.path.splitext(p)[0]))
 # init video predictor state
 inference_state = video_predictor.init_state(video_path=video_dir)
 
-ann_frame_idx = 0  # the frame index we interact with
+ann_frame_idx = 10  # the frame index we interact with
 ann_obj_id = 1  # give a unique id to each object we interact with (it can be any integers)
-
 
 """
 Step 2: Prompt Grounding DINO and SAM image predictor to get the box and mask for specific frame
@@ -68,11 +65,12 @@ Step 2: Prompt Grounding DINO and SAM image predictor to get the box and mask fo
 img_path = os.path.join(video_dir, frame_names[ann_frame_idx])
 image = Image.open(img_path)
 
-# run Grounding DINO on the image
+# run Grounding DINO on the image -> We only run the model on the first frame
 inputs = processor(images=image, text=text, return_tensors="pt").to(device)
 with torch.no_grad():
     outputs = grounding_model(**inputs)
 
+# Post process Grounding DINO outputs
 results = processor.post_process_grounded_object_detection(
     outputs,
     inputs.input_ids,
@@ -81,12 +79,20 @@ results = processor.post_process_grounded_object_detection(
     target_sizes=[image.size[::-1]]
 )
 
+# Check what results contain
+print("Grounding Dino results:", results)
+
 # prompt SAM image predictor to get the mask for the object
 image_predictor.set_image(np.array(image.convert("RGB")))
 
 # process the detection results
+# SAM2 uses input boxes in the format of (x1, y1, x2, y2) for further processing
 input_boxes = results[0]["boxes"].cpu().numpy()
+print("Input boxes:", input_boxes)
 OBJECTS = results[0]["labels"]
+print("Detected objects:", OBJECTS)
+SCORES = results[0]["scores"].cpu().numpy()
+print("Scores:", SCORES)
 
 # prompt SAM 2 image predictor to get the mask for the object
 masks, scores, logits = image_predictor.predict(
@@ -108,7 +114,7 @@ elif masks.ndim == 4:
 Step 3: Register each object's positive points to video predictor with seperate add_new_points call
 """
 
-PROMPT_TYPE_FOR_VIDEO = "box" # or "point"
+PROMPT_TYPE_FOR_VIDEO = "box"  # or "point"
 
 assert PROMPT_TYPE_FOR_VIDEO in ["point", "box", "mask"], "SAM 2 video predictor only support point/box/mask prompt"
 
@@ -148,7 +154,6 @@ elif PROMPT_TYPE_FOR_VIDEO == "mask":
 else:
     raise NotImplementedError("SAM 2 video predictor only support point/box/mask prompts")
 
-
 """
 Step 4: Propagate the video predictor to get the segmentation results for each frame
 """
@@ -171,24 +176,24 @@ if not os.path.exists(save_dir):
 ID_TO_OBJECTS = {i: obj for i, obj in enumerate(OBJECTS, start=1)}
 for frame_idx, segments in video_segments.items():
     img = cv2.imread(os.path.join(video_dir, frame_names[frame_idx]))
-    
+
     object_ids = list(segments.keys())
     masks = list(segments.values())
     masks = np.concatenate(masks, axis=0)
-    
+
     detections = sv.Detections(
         xyxy=sv.mask_to_xyxy(masks),  # (n, 4)
-        mask=masks, # (n, h, w)
+        mask=masks,  # (n, h, w)
         class_id=np.array(object_ids, dtype=np.int32),
     )
     box_annotator = sv.BoxAnnotator()
     annotated_frame = box_annotator.annotate(scene=img.copy(), detections=detections)
     label_annotator = sv.LabelAnnotator()
-    annotated_frame = label_annotator.annotate(annotated_frame, detections=detections, labels=[ID_TO_OBJECTS[i] for i in object_ids])
+    labels_with_scores = [f"{ID_TO_OBJECTS[i]}: {SCORES[i - 1]:.2f}" for i in object_ids]
+    annotated_frame = label_annotator.annotate(annotated_frame, detections=detections, labels=labels_with_scores)
     mask_annotator = sv.MaskAnnotator()
     annotated_frame = mask_annotator.annotate(scene=annotated_frame, detections=detections)
     cv2.imwrite(os.path.join(save_dir, f"annotated_frame_{frame_idx:05d}.jpg"), annotated_frame)
-
 
 """
 Step 6: Convert the annotated frames to video
