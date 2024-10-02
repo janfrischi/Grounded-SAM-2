@@ -6,6 +6,7 @@ import numpy as np
 import supervision as sv
 import pycocotools.mask as mask_util
 import warnings
+import time
 from pathlib import Path
 from torchvision.ops import box_convert
 from sam2.build_sam import build_sam2
@@ -16,8 +17,8 @@ warnings.filterwarnings("ignore")
 """
 Hyper parameters
 """
-TEXT_PROMPT = "billboard."
-IMG_PATH = "notebooks/images/city.jpg"
+TEXT_PROMPT = "laptop. hoodie. robot. tools. switch. tripod. box. cable. table."
+IMG_PATH = "captured_photos_zed/captured_image_1.png"
 SAM2_CHECKPOINT = "./checkpoints/sam2_hiera_large.pt"
 SAM2_MODEL_CONFIG = "sam2_hiera_l.yaml"
 GROUNDING_DINO_CONFIG = "grounding_dino/groundingdino/config/GroundingDINO_SwinT_OGC.py"
@@ -25,6 +26,7 @@ GROUNDING_DINO_CHECKPOINT = "gdino_checkpoints/groundingdino_swint_ogc.pth"
 BOX_THRESHOLD = 0.35
 TEXT_THRESHOLD = 0.25
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+print("device", DEVICE)
 OUTPUT_DIR = Path("outputs/grounded_sam2_local_demo")
 DUMP_JSON_RESULTS = True
 
@@ -56,6 +58,9 @@ image_source, image = load_image(img_path)
 
 sam2_predictor.set_image(image_source)
 
+# Measure time for detection step
+start_time = time.time()
+
 boxes, confidences, labels = predict(
     model=grounding_model,
     image=image,
@@ -63,6 +68,9 @@ boxes, confidences, labels = predict(
     box_threshold=BOX_THRESHOLD,
     text_threshold=TEXT_THRESHOLD,
 )
+
+detection_time = time.time() - start_time
+print(f"Detection step took {detection_time:.2f} seconds")
 
 # process the box prompt for SAM 2
 h, w, _ = image_source.shape
@@ -77,12 +85,18 @@ if torch.cuda.get_device_properties(0).major >= 8:
     torch.backends.cuda.matmul.allow_tf32 = True
     torch.backends.cudnn.allow_tf32 = True
 
+# Measure time for segmentation step
+start_time = time.time()
+
 masks, scores, logits = sam2_predictor.predict(
     point_coords=None,
     point_labels=None,
     box=input_boxes,
     multimask_output=False,
 )
+
+segmentation_time = time.time() - start_time
+print(f"Segmentation step took {segmentation_time:.2f} seconds")
 
 """
 Post-process the output of the model to get the masks, scores, and logits for visualization
