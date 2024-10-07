@@ -1,3 +1,4 @@
+# Used for downloading the ZED Python API from the Stereolabs servers
 import os
 import platform
 import sys
